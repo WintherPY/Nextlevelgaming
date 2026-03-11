@@ -33,6 +33,8 @@ const STARTING_COINS  = 300;
 const PREP_DURATION   = 120;  // seconds (preparation phase)
 const BATTLE_DURATION = 120;  // seconds (maximum battle length)
 const BATTLE_TICK_MS  = 120;  // ms between battle updates
+const SELL_REFUND     = 0.75; // fraction of cost returned when selling a unit
+const MATCH_WINS      = 2;    // rounds needed to win the match (best-of-3)
 
 // ─── Colours ─────────────────────────────────────────────────────────
 const C = {
@@ -63,6 +65,7 @@ const C = {
 const STATE = {
   MENU:        'menu',
   MODE_SELECT: 'mode_select',
+  DIFF_SELECT: 'diff_select',
   PREP_P1:     'prep_p1',
   PREP_P2:     'prep_p2',
   BATTLE:      'battle',
@@ -70,4 +73,4 @@ const STATE = {
 };
 
 // ─── Unit type keys (must match UNIT_DEFS keys in units.js) ──────────
-const UNIT_KEYS = ['grunt', 'ranger', 'tank', 'speeder'];
+const UNIT_KEYS = ['grunt', 'speeder', 'ranger', 'sniper', 'tank', 'artillery'];

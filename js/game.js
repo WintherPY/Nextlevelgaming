@@ -15,12 +15,15 @@ class Game {
     window.addEventListener('resize', () => this._resize());
 
     // ── State ──────────────────────────────────────────────────────
-    this.state     = STATE.MENU;
-    this.mode      = null;   // '1vsAI' | '1vs1'
-    this.round     = 1;
+    this.state      = STATE.MENU;
+    this.mode       = null;   // '1vsAI' | '1vs1'
+    this.round      = 1;
+    this.difficulty = 'medium';  // 'easy' | 'medium' | 'hard'
 
     // ── Player data ────────────────────────────────────────────────
     this.coins     = [0, STARTING_COINS, STARTING_COINS];  // index 1 & 2
+    this.scores    = [0, 0, 0];  // wins per player; index 1 & 2
+    this.matchOver = false;
     this.units     = [];   // live Unit instances
     this.towers    = [];   // two Tower instances
 
@@ -50,7 +53,16 @@ class Game {
 
     this.canvas.addEventListener('mousemove', e => this._onMouseMove(e));
     this.canvas.addEventListener('click',     e => this._onClick(e));
-    this.canvas.addEventListener('contextmenu', e => { e.preventDefault(); this.selectedUnit = null; });
+    this.canvas.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      if (this.selectedUnit !== null) {
+        this.selectedUnit = null;  // deselect
+      } else if (this.state === STATE.PREP_P1 || this.state === STATE.PREP_P2) {
+        const pos  = this._canvasPos(e);
+        const cell = this._screenToGrid(pos.x, pos.y);
+        if (cell) this._trySell(cell.col, cell.row);
+      }
+    });
 
     // Start loop
     requestAnimationFrame(ts => this._loop(ts));
@@ -243,16 +255,28 @@ class Game {
   _endBattle(winner, msg) {
     this.winner = winner;
     this.winMsg = msg;
-    this.state  = STATE.RESULTS;
+    if (winner === 1 || winner === 2) {
+      this.scores[winner]++;
+      if (this.scores[winner] >= MATCH_WINS) {
+        this.matchOver = true;
+      }
+    }
+    this.state = STATE.RESULTS;
   }
 
   // ─────────────────────────────────────────────────────────────────
   //  STATE TRANSITIONS
   // ─────────────────────────────────────────────────────────────────
   _startGame(mode) {
-    this.mode  = mode;
-    this.round = 1;
-    this._beginPrep();
+    this.mode      = mode;
+    this.round     = 1;
+    this.scores    = [0, 0, 0];
+    this.matchOver = false;
+    if (mode === '1vsAI') {
+      this.state = STATE.DIFF_SELECT;
+    } else {
+      this._beginPrep();
+    }
   }
 
   _beginPrep() {
@@ -272,7 +296,7 @@ class Game {
 
     if (this.mode === '1vsAI') {
       // AI places immediately; only player gets the prep screen
-      const aiPlacements = AI.buildArmy(STARTING_COINS);
+      const aiPlacements = AI.buildArmy(STARTING_COINS, this.difficulty);
       for (const p of aiPlacements) {
         const u = new Unit(p.typeKey, 2, p.col, p.row);
         this.units.push(u);
@@ -309,7 +333,14 @@ class Game {
   }
 
   _playAgain() {
-    this.round++;
+    if (this.matchOver) {
+      // Start a brand-new match
+      this.round     = 1;
+      this.scores    = [0, 0, 0];
+      this.matchOver = false;
+    } else {
+      this.round++;
+    }
     this._beginPrep();
   }
 
@@ -403,6 +434,17 @@ class Game {
     this.placedCells.add(key);
   }
 
+  _trySell(col, row) {
+    const player = this._currentPlayer();
+    const key    = `${col},${row}`;
+    const idx    = this.units.findIndex(u => u.col === col && u.row === row && u.player === player);
+    if (idx === -1) return;
+    const refund = Math.floor(UNIT_DEFS[this.units[idx].typeKey].cost * SELL_REFUND);
+    this.coins[player] += refund;
+    this.units.splice(idx, 1);
+    this.placedCells.delete(key);
+  }
+
   // ─────────────────────────────────────────────────────────────────
   //  RENDER – main dispatcher
   // ─────────────────────────────────────────────────────────────────
@@ -412,7 +454,8 @@ class Game {
     this.buttons = [];  // rebuilt each frame
 
     if (this.state === STATE.MENU)        this._renderMenu();
-    else if (this.state === STATE.MODE_SELECT) this._renderModeSelect();
+    else if (this.state === STATE.MODE_SELECT)  this._renderModeSelect();
+    else if (this.state === STATE.DIFF_SELECT)  this._renderDiffSelect();
     else if (this.state === STATE.PREP_P1 ||
              this.state === STATE.PREP_P2) this._renderPrep();
     else if (this.state === STATE.BATTLE)  this._renderBattleScreen();
@@ -461,7 +504,7 @@ class Game {
     ctx.textAlign = 'right';
     ctx.font = '14px "Segoe UI", Arial, sans-serif';
     ctx.fillStyle = C.textDim;
-    ctx.fillText('v1.0', CANVAS_W - 16, CANVAS_H - 12);
+    ctx.fillText('v2.0', CANVAS_W - 16, CANVAS_H - 12);
     ctx.restore();
   }
 
@@ -507,6 +550,56 @@ class Game {
     // Back button
     this._drawButton(CANVAS_W / 2 - 80, 500, 160, 44, '← Back',
       () => { this.state = STATE.MENU; }, false);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  //  RENDER – DIFFICULTY SELECT (1vsAI only)
+  // ─────────────────────────────────────────────────────────────────
+  _renderDiffSelect() {
+    const ctx = this.ctx;
+    this._drawBg();
+    this._drawGridLines(0.2);
+
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 44px "Segoe UI", Arial, sans-serif';
+    ctx.fillStyle = C.text;
+    ctx.shadowColor = C.accent;
+    ctx.shadowBlur  = 20;
+    ctx.fillText('SELECT DIFFICULTY', CANVAS_W / 2, 200);
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    const diffs = [
+      { key: 'easy',   label: 'EASY',   desc: 'Only basic units, 60% budget',    color: C.hpGreen },
+      { key: 'medium', label: 'MEDIUM', desc: 'Balanced mix, full budget',         color: C.textGold },
+      { key: 'hard',   label: 'HARD',   desc: 'Heavy units, artillery, full budget', color: C.p2 },
+    ];
+    const bw = 240, bh = 80, gap = 30;
+    const totalW = bw * 3 + gap * 2;
+    let bx = CANVAS_W / 2 - totalW / 2;
+    const by = 280;
+
+    for (const d of diffs) {
+      const isPrimary = this.difficulty === d.key;
+      const dx = bx;
+      this._drawButton(dx, by, bw, bh, d.label, () => {
+        this.difficulty = d.key;
+        this._beginPrep();
+      }, isPrimary);
+
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.font = '14px "Segoe UI", Arial, sans-serif';
+      ctx.fillStyle = d.color;
+      ctx.fillText(d.desc, dx + bw / 2, by + bh + 24);
+      ctx.restore();
+
+      bx += bw + gap;
+    }
+
+    this._drawButton(CANVAS_W / 2 - 80, 460, 160, 44, '← Back',
+      () => { this.state = STATE.MODE_SELECT; }, false);
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -608,8 +701,8 @@ class Game {
     ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
     // Winner banner
-    const bx = CANVAS_W / 2 - 340, by = CANVAS_H / 2 - 160;
-    const bw = 680, bh = 320;
+    const bx = CANVAS_W / 2 - 360, by = CANVAS_H / 2 - 180;
+    const bw = 720, bh = 360;
 
     // Panel
     ctx.fillStyle   = '#0b1428';
@@ -624,35 +717,86 @@ class Game {
 
     ctx.textAlign = 'center';
 
-    // Title
+    // Superbanner for match over
+    if (this.matchOver) {
+      ctx.font      = 'bold 20px "Segoe UI", Arial, sans-serif';
+      ctx.fillStyle = C.textGold;
+      ctx.shadowColor = C.textGold;
+      ctx.shadowBlur  = 14;
+      ctx.fillText('✦  MATCH OVER  ✦', CANVAS_W / 2, by + 38);
+      ctx.shadowBlur = 0;
+    }
+
+    // Round winner title
     const titleColor = this.winner === 1 ? C.p1 : this.winner === 2 ? C.p2 : C.textGold;
-    ctx.font      = 'bold 52px "Segoe UI", Arial, sans-serif';
+    ctx.font      = `bold ${this.matchOver ? 46 : 52}px "Segoe UI", Arial, sans-serif`;
     ctx.fillStyle = titleColor;
     ctx.shadowColor = titleColor;
     ctx.shadowBlur  = 24;
     const titleText = this.winner === 'draw' ? 'DRAW!' :
                       this.winner === 1 ? 'PLAYER 1 WINS!' :
                       (this.mode === '1vsAI' ? 'AI WINS!' : 'PLAYER 2 WINS!');
-    ctx.fillText(titleText, CANVAS_W / 2, by + 80);
+    ctx.fillText(titleText, CANVAS_W / 2, by + (this.matchOver ? 88 : 80));
     ctx.shadowBlur = 0;
 
     // Detail
-    ctx.font      = '18px "Segoe UI", Arial, sans-serif';
+    ctx.font      = '17px "Segoe UI", Arial, sans-serif';
     ctx.fillStyle = C.textDim;
     ctx.fillText(this.winMsg, CANVAS_W / 2, by + 130);
 
     // Round info
-    ctx.font      = '15px "Segoe UI", Arial, sans-serif';
+    ctx.font      = '14px "Segoe UI", Arial, sans-serif';
     ctx.fillStyle = C.textDim;
-    ctx.fillText(`Round ${this.round} complete`, CANVAS_W / 2, by + 165);
+    ctx.fillText(`Round ${this.round} complete`, CANVAS_W / 2, by + 158);
+
+    // ── Score board ─────────────────────────────────────────────────
+    const sbY   = by + 186;
+    const p2Name = this.mode === '1vsAI' ? 'AI' : 'Player 2';
+
+    ctx.font      = 'bold 15px "Segoe UI", Arial, sans-serif';
+    ctx.fillStyle = C.textDim;
+    ctx.fillText('MATCH SCORE', CANVAS_W / 2, sbY);
+
+    // P1 score
+    ctx.font      = `bold 46px "Segoe UI", Arial, sans-serif`;
+    ctx.fillStyle = C.p1;
+    ctx.shadowColor = C.p1;
+    ctx.shadowBlur  = this.scores[1] >= MATCH_WINS ? 18 : 0;
+    ctx.fillText(this.scores[1], CANVAS_W / 2 - 70, sbY + 52);
+    ctx.shadowBlur = 0;
+
+    ctx.font      = 'bold 14px "Segoe UI", Arial, sans-serif';
+    ctx.fillStyle = C.p1;
+    ctx.fillText('Player 1', CANVAS_W / 2 - 70, sbY + 72);
+
+    ctx.font      = 'bold 32px "Segoe UI", Arial, sans-serif';
+    ctx.fillStyle = C.textDim;
+    ctx.fillText('–', CANVAS_W / 2, sbY + 46);
+
+    // P2/AI score
+    ctx.font      = `bold 46px "Segoe UI", Arial, sans-serif`;
+    ctx.fillStyle = C.p2;
+    ctx.shadowColor = C.p2;
+    ctx.shadowBlur  = this.scores[2] >= MATCH_WINS ? 18 : 0;
+    ctx.fillText(this.scores[2], CANVAS_W / 2 + 70, sbY + 52);
+    ctx.shadowBlur = 0;
+
+    ctx.font      = 'bold 14px "Segoe UI", Arial, sans-serif';
+    ctx.fillStyle = C.p2;
+    ctx.fillText(p2Name, CANVAS_W / 2 + 70, sbY + 72);
 
     ctx.restore();
 
     // Buttons
-    const btnY = by + bh - 80;
-    this._drawButton(CANVAS_W / 2 - 200, btnY, 180, 50, 'Play Again',
-      () => this._playAgain(), true);
-    this._drawButton(CANVAS_W / 2 + 20, btnY, 180, 50, 'Main Menu',
+    const btnY = by + bh - 72;
+    if (this.matchOver) {
+      this._drawButton(CANVAS_W / 2 - 200, btnY, 190, 50, 'New Match',
+        () => this._playAgain(), true);
+    } else {
+      this._drawButton(CANVAS_W / 2 - 200, btnY, 190, 50, 'Next Round →',
+        () => this._playAgain(), true);
+    }
+    this._drawButton(CANVAS_W / 2 + 10, btnY, 190, 50, 'Main Menu',
       () => this._goToMenu(), false);
   }
 
@@ -674,16 +818,23 @@ class Game {
     ctx.moveTo(0, HUD_H); ctx.lineTo(CANVAS_W, HUD_H);
     ctx.stroke();
 
-    // Round
+    // Round + scores
     ctx.textAlign = 'left';
     ctx.font      = 'bold 18px "Segoe UI", Arial, sans-serif';
     ctx.fillStyle = C.textGold;
     ctx.fillText(`Round ${this.round}`, 14, 26);
 
+    const p2Name = this.mode === '1vsAI' ? 'AI' : 'P2';
+    ctx.font      = '13px "Segoe UI", Arial, sans-serif';
+    ctx.fillStyle = C.p1;
+    ctx.fillText(`P1: ${this.scores[1]}`, 14, 50);
+    ctx.fillStyle = C.p2;
+    ctx.fillText(`${p2Name}: ${this.scores[2]}`, 62, 50);
+
     // Phase label
-    ctx.font      = '14px "Segoe UI", Arial, sans-serif';
+    ctx.font      = '13px "Segoe UI", Arial, sans-serif';
     ctx.fillStyle = C.textDim;
-    ctx.fillText('PREPARATION PHASE', 14, 50);
+    ctx.fillText('PREPARATION PHASE', 14 + (this.mode === '1vsAI' ? 80 : 80), 50);
 
     // Player indicator
     const pColor = player === 1 ? C.p1 : C.p2;
@@ -728,23 +879,30 @@ class Game {
     ctx.moveTo(0, HUD_H); ctx.lineTo(CANVAS_W, HUD_H);
     ctx.stroke();
 
-    // Round
+    // Round + scores (left)
     ctx.textAlign = 'left';
     ctx.font      = 'bold 18px "Segoe UI", Arial, sans-serif';
     ctx.fillStyle = C.textGold;
     ctx.fillText(`Round ${this.round}`, 14, 26);
 
-    ctx.font = '14px "Segoe UI", Arial, sans-serif';
-    ctx.fillStyle = C.textDim;
-    ctx.fillText('BATTLE PHASE', 14, 50);
+    const p2Label = this.mode === '1vsAI' ? 'AI' : 'P2';
+    ctx.font      = '13px "Segoe UI", Arial, sans-serif';
+    ctx.fillStyle = C.p1;
+    ctx.fillText(`P1: ${this.scores[1]}`, 14, 50);
+    ctx.fillStyle = C.p2;
+    ctx.fillText(`${p2Label}: ${this.scores[2]}`, 62, 50);
 
-    // Timer
+    ctx.font      = '13px "Segoe UI", Arial, sans-serif';
+    ctx.fillStyle = C.textDim;
+    ctx.fillText('BATTLE PHASE', 115, 50);
+
+    // Timer (center)
     ctx.textAlign   = 'center';
     ctx.font        = 'bold 32px "Segoe UI", Arial, sans-serif';
     ctx.fillStyle   = C.text;
     ctx.fillText(this._formatTime(secs), CANVAS_W / 2, 44);
 
-    // Unit counts
+    // Unit counts (right)
     const p1u = this.units.filter(u => u.player === 1).length;
     const p2u = this.units.filter(u => u.player === 2).length;
     const t1  = this.towers.find(t => t.player === 1);
@@ -753,12 +911,11 @@ class Game {
     ctx.font      = '15px "Segoe UI", Arial, sans-serif';
     ctx.fillStyle = C.p1;
     ctx.textAlign = 'left';
-    ctx.fillText(`P1: ${p1u} units  Tower: ${t1 ? t1.hp : 0} HP`, 14, 54);
+    ctx.fillText(`P1: ${p1u} units  Tower: ${t1 ? t1.hp : 0} HP`, 14, 68);
 
-    const p2Label = this.mode === '1vsAI' ? 'AI' : 'P2';
     ctx.fillStyle = C.p2;
     ctx.textAlign = 'right';
-    ctx.fillText(`Tower: ${t2 ? t2.hp : 0} HP  Units: ${p2u} ${p2Label}`, CANVAS_W - 14, 54);
+    ctx.fillText(`Tower: ${t2 ? t2.hp : 0} HP  Units: ${p2u} ${p2Label}`, CANVAS_W - 14, 68);
 
     ctx.restore();
   }
@@ -799,11 +956,17 @@ class Game {
     ctx.moveTo(sx + 12, HUD_H + 68); ctx.lineTo(sx + sw - 12, HUD_H + 68);
     ctx.stroke();
 
-    // Unit cards
-    let cardY = HUD_H + 80;
+    // Unit cards – dynamically sized to fit all UNIT_KEYS in the shop panel
+    const readyY  = CANVAS_H - 70;
+    const footerH = 48;   // instructions + gap above ready button
+    const gapH    = 6;
+    const numCards = UNIT_KEYS.length;
+    const availH  = readyY - footerH - (HUD_H + 75);
+    const cardH   = Math.floor((availH - gapH * (numCards - 1)) / numCards);
+
+    let cardY = HUD_H + 75;
     for (const key of UNIT_KEYS) {
       const def       = UNIT_DEFS[key];
-      const cardH     = 100;
       const cardX     = sx + 10;
       const cardW     = sw - 20;
       const selected  = this.selectedUnit === key;
@@ -823,32 +986,34 @@ class Game {
       ctx.shadowBlur = 0;
 
       // Unit icon
-      const iconX = cardX + 28;
+      const iconX = cardX + 24;
       const iconY = cardY + cardH / 2;
       ctx.save();
       ctx.translate(iconX, iconY);
-      this._drawUnitShape(ctx, key, player === 1 ? C.p1 : C.p2, 14, canAfford ? 1 : 0.4);
+      this._drawUnitShape(ctx, key, player === 1 ? C.p1 : C.p2, 12, canAfford ? 1 : 0.4);
       ctx.restore();
 
       // Name & cost
       ctx.textAlign   = 'left';
-      ctx.font        = `bold 15px "Segoe UI", Arial, sans-serif`;
+      ctx.font        = `bold 13px "Segoe UI", Arial, sans-serif`;
       ctx.fillStyle   = canAfford ? C.text : C.textDim;
-      ctx.fillText(def.name, cardX + 52, cardY + 22);
+      ctx.fillText(def.name, cardX + 44, cardY + 16);
 
       ctx.fillStyle = canAfford ? C.textGold : C.textDim;
-      ctx.font      = 'bold 13px "Segoe UI", Arial, sans-serif';
-      ctx.fillText(`⬡ ${def.cost}`, cardX + 52, cardY + 40);
+      ctx.font      = 'bold 12px "Segoe UI", Arial, sans-serif';
+      ctx.fillText(`⬡ ${def.cost}`, cardX + 44, cardY + 30);
 
       // Stats
-      ctx.font      = '11px "Segoe UI", Arial, sans-serif';
+      ctx.font      = '10px "Segoe UI", Arial, sans-serif';
       ctx.fillStyle = C.textDim;
-      ctx.fillText(`HP ${def.maxHp}  DMG ${def.damage}  SPD ${def.speed}`, cardX + 52, cardY + 56);
+      ctx.fillText(`HP ${def.maxHp}  DMG ${def.damage}  SPD ${def.speed}`, cardX + 44, cardY + 44);
 
-      // Description
-      ctx.font      = '11px "Segoe UI", Arial, sans-serif';
-      ctx.fillStyle = C.textDim;
-      ctx.fillText(def.desc, cardX + 12, cardY + 78);
+      // Description (only if there's room)
+      if (cardH >= 72) {
+        ctx.font      = '10px "Segoe UI", Arial, sans-serif';
+        ctx.fillStyle = C.textDim;
+        ctx.fillText(def.desc, cardX + 10, cardY + cardH - 8);
+      }
 
       // Register button area
       const finalCardY = cardY;
@@ -861,20 +1026,19 @@ class Game {
         },
       });
 
-      cardY += cardH + 8;
+      cardY += cardH + gapH;
     }
-
-    // Ready button
-    const readyY = CANVAS_H - 70;
-    this._drawButton(sx + 20, readyY, sw - 40, 50, 'READY →',
-      () => this._endPrep(), true);
 
     // Instructions
     ctx.textAlign = 'center';
-    ctx.font      = '11px "Segoe UI", Arial, sans-serif';
+    ctx.font      = '10px "Segoe UI", Arial, sans-serif';
     ctx.fillStyle = C.textDim;
-    ctx.fillText('Click unit → click your zone', sx + sw / 2, readyY - 12);
-    ctx.fillText('Right-click to deselect', sx + sw / 2, readyY - 26);
+    ctx.fillText('Click card → click your zone', sx + sw / 2, readyY - 24);
+    ctx.fillText('Right-click placed unit to sell (75%)', sx + sw / 2, readyY - 11);
+
+    // Ready button
+    this._drawButton(sx + 20, readyY, sw - 40, 50, 'READY →',
+      () => this._endPrep(), true);
 
     ctx.restore();
   }
@@ -1063,6 +1227,33 @@ class Game {
         ctx.fill();
         ctx.stroke();
         break;
+      case 'cross': {
+        const t = s * 0.38;
+        ctx.beginPath();
+        ctx.moveTo(-t, -s); ctx.lineTo(t, -s);
+        ctx.lineTo(t, -t);  ctx.lineTo(s, -t);
+        ctx.lineTo(s, t);   ctx.lineTo(t, t);
+        ctx.lineTo(t, s);   ctx.lineTo(-t, s);
+        ctx.lineTo(-t, t);  ctx.lineTo(-s, t);
+        ctx.lineTo(-s, -t); ctx.lineTo(-t, -t);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+      case 'pentagon': {
+        ctx.beginPath();
+        for (let i = 0; i < 5; i++) {
+          const angle = Math.PI / 180 * (72 * i - 90);
+          const px = s * Math.cos(angle);
+          const py = s * Math.sin(angle);
+          i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
       default:
         ctx.beginPath();
         ctx.arc(0, 0, s, 0, Math.PI * 2);
